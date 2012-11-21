@@ -89,7 +89,7 @@ def generate_install_script(port):
 # This runs on the target host
 def install_custom_gvim(port):
     import os
-    base_dir = "/tmp/vdsm_s_%d" % (os.getpid(),)
+    base_dir = "/tmp/sgvim_s_%d" % (os.getpid(),)
     os.makedirs(base_dir)
     gvim_path = os.path.join(base_dir, "gvim")
     with open(gvim_path, "w") as f:
