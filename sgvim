@@ -1,0 +1,130 @@
+#!/usr/bin/python
+#
+# Copyright 2012 Saggi Mizrahi
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+#
+# Refer to the README and COPYING files for full details of the license
+#
+
+import SocketServer
+import threading
+import subprocess
+import sys
+import os
+import marshal
+import base64
+import shutil
+
+from Queue import Queue
+
+PORT_RANGE = xrange(49152, 65535)
+
+
+class SGvimHandler(SocketServer.BaseRequestHandler):
+    def handle(self):
+        remote_host = self.client_address[0]
+        path = self.request.recv(1024).strip()
+        sock_path = get_ssh_sock_path()
+        gvim_cmd = ':let g:netrw_sftp_cmd = "sftp -o ControlPath=%s"' % \
+            (sock_path,)
+        remote_path = "sftp://%s/%s" % (remote_host, path)
+
+        subprocess.Popen(["gvim", "--cmd", gvim_cmd, remote_path])
+
+
+def start_listener(resp_chan):
+    for port in PORT_RANGE:
+        try:
+            server = SocketServer.TCPServer(("localhost", port), SGvimHandler)
+            break
+        except:
+            pass
+
+    resp_chan.put_nowait(port)
+    del resp_chan
+    server.serve_forever()
+
+
+def get_system_dir():
+    system_dir = "/tmp/sgvim_%d" % (os.getpid(),)
+    try:
+        os.makedirs(system_dir)
+    except (OSError, IOError):
+        pass
+    return system_dir
+
+
+def get_ssh_sock_path():
+    system_dir = get_system_dir()
+    return os.path.join(system_dir, "ssh.sock")
+
+
+def generate_install_script(port):
+    # Because all the code in the install script needs to be escaped for bash
+    # and python I only make the boilerplate in actual python and the rest will
+    # be passed as a marshaled code object. This means that most of the code
+    # can be changed without weird and hard to debug escaping problems.
+    code = marshal.dumps(install_custom_gvim.func_code)
+    install_code = ''.join((s.strip() for s in base64.encodestring(code)))
+    return ("import marshal, types, base64\n" +
+            ("code_string = base64.decodestring(\"%s\")\n" % install_code) +
+            "code = marshal.loads(code_string)\n" +
+            "func = types.FunctionType(code, globals(), \"install\")\n" +
+            ("func(%d)" % (port,)))
+
+
+# This runs on the target host
+def install_custom_gvim(port):
+    import os
+    base_dir = "/tmp/vdsm_s_%d" % (os.getpid(),)
+    os.makedirs(base_dir)
+    gvim_path = os.path.join(base_dir, "gvim")
+    with open(gvim_path, "w") as f:
+        f.write("#!/bin/sh\n")
+        f.write('echo `readlink -f "$@"` | nc localhost %d\n' % (port,))
+
+    os.chmod(gvim_path, 0555)  # 0555/-r-xr-xr-x
+    e = os.environ.copy()
+    e['PATH'] = "%s:%s" % (base_dir, e['PATH'])
+    # TODO: get default shell from /etc/passwd
+    os.execvpe("bash", [], e)
+
+
+def run_ssh(host, local_port, remote_port):
+    sock_path = get_ssh_sock_path()
+    subprocess.call(["ssh", host, "-M", "-S", sock_path, "-t", "-R",
+                     "%d:localhost:%d" % (local_port, remote_port),
+                     "/usr/bin/python -c '%s'" %
+                     (generate_install_script(remote_port),)])
+
+
+def main():
+    port_chan = Queue()
+    t = threading.Thread(target=start_listener, args=(port_chan,))
+    t.setDaemon(True)
+    t.start()
+    port = port_chan.get()
+    del port_chan
+
+    remote_host = sys.argv[1]
+    # TODO: Make sure port is free on target aswell
+    try:
+        run_ssh(remote_host, port, port)
+    finally:
+        shutil.rmtree(get_system_dir())
+
+if __name__ == "__main__":
+    main()
