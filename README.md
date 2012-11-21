@@ -8,7 +8,7 @@ With this script you don't have to even think about it.
 
 ## Usage
 
-	$ sgvim root@snoop.usersys
-	root@snoop.usersys's password:
-	$ gvim anaconda-ks.cfg
+    $ sgvim root@snoop.usersys
+    root@snoop.usersys's password:
+    $ gvim anaconda-ks.cfg
 
