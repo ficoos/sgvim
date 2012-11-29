@@ -24,9 +24,9 @@ import threading
 import subprocess
 import sys
 import os
-import marshal
 import base64
 import shutil
+import pwd
 
 from Queue import Queue
 
@@ -73,28 +73,18 @@ def get_ssh_sock_path():
 
 
 def generate_install_script(port):
-    # Because all the code in the install script needs to be escaped for bash
-    # and python I only make the boilerplate in actual python and the rest will
-    # be passed as a marshaled code object. This means that most of the code
-    # can be changed without weird and hard to debug escaping problems.
-    code = marshal.dumps(install_custom_gvim.func_code)
-    install_code = ''.join((s.strip() for s in base64.encodestring(code)))
-    return ("import marshal, types, base64\n" +
-            ("code_string = base64.decodestring(\"%s\")\n" % install_code) +
-            "code = marshal.loads(code_string)\n" +
-            "func = types.FunctionType(code, globals(), \"install\")\n" +
-            ("func(%d)" % (port,)))
+    with open(__file__, "r") as f:
+        install_code = ''.join((s.strip()
+                               for s in base64.encodestring(f.read())))
+
+    return "python -c \"`echo %s | base64 -d`\" install %d" % \
+           (install_code, port)
 
 
 # This runs on the target host
 def install_custom_gvim(port):
-    import os
-    base_dir = "/tmp/sgvim_s_%d" % (port,)
-    try:
-        os.makedirs(base_dir)
-    except (OSError, IOError) as e:
-        pass
-
+    base_dir = "/tmp/vdsm_s_%d" % (os.getpid(),)
+    os.makedirs(base_dir)
     gvim_path = os.path.join(base_dir, "gvim")
     with open(gvim_path, "w") as f:
         f.write("#!/bin/sh\n")
@@ -103,19 +93,24 @@ def install_custom_gvim(port):
     os.chmod(gvim_path, 0555)  # 0555/-r-xr-xr-x
     e = os.environ.copy()
     e['PATH'] = "%s:%s" % (base_dir, e['PATH'])
-    # TODO: get default shell from /etc/passwd
-    os.execvpe("bash", [], e)
+    shell = pwd.getpwuid(os.geteuid()).pw_shell
+    os.execvpe(shell, [], e)
 
 
 def run_ssh(host, local_port, remote_port):
     sock_path = get_ssh_sock_path()
     subprocess.call(["ssh", host, "-M", "-S", sock_path, "-t", "-R",
                      "%d:localhost:%d" % (local_port, remote_port),
-                     "/usr/bin/python -c '%s'" %
+                     "%s" %
                      (generate_install_script(remote_port),)])
 
 
 def main():
+    if len(sys.argv) == 3:
+        if sys.argv[1] == "install":
+            install_custom_gvim(int(sys.argv[2]))
+            return
+
     port_chan = Queue()
     t = threading.Thread(target=start_listener, args=(port_chan,))
     t.setDaemon(True)
