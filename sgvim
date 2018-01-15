@@ -71,46 +71,13 @@ def get_ssh_sock_path():
     system_dir = get_system_dir()
     return os.path.join(system_dir, "ssh.sock")
 
-
-def generate_install_script(port):
-    with open(__file__, "r") as f:
-        install_code = ''.join((s.strip()
-                               for s in base64.encodestring(f.read())))
-
-    return "python -c \"`echo %s | base64 -d`\" install %d" % \
-           (install_code, port)
-
-
-# This runs on the target host
-def install_custom_gvim(port):
-    base_dir = "/tmp/sgvim_s_%d" % (os.getpid(),)
-    os.makedirs(base_dir)
-    gvim_path = os.path.join(base_dir, "gvim")
-    with open(gvim_path, "w") as f:
-        f.write("#!/bin/sh\n")
-        f.write('echo `readlink -f "$@"` | nc localhost %d\n' % (port,))
-
-    os.chmod(gvim_path, 0555)  # 0555/-r-xr-xr-x
-    e = os.environ.copy()
-    e['PATH'] = "%s:%s" % (base_dir, e['PATH'])
-    shell = pwd.getpwuid(os.geteuid()).pw_shell
-    os.execvpe(shell, [], e)
-
-
 def run_ssh(host, local_port, remote_port):
     sock_path = get_ssh_sock_path()
     subprocess.call(["ssh", host, "-M", "-S", sock_path, "-t", "-R",
                      "%d:localhost:%d" % (local_port, remote_port),
-                     "%s" %
-                     (generate_install_script(remote_port),)])
-
+                     "env BASH_FUNC_gvim\(\)='() { echo $(readlink -f \"$1\") > /dev/tcp/127.0.0.1/%d; }' bash" % (remote_port,)])
 
 def main():
-    if len(sys.argv) == 3:
-        if sys.argv[1] == "install":
-            install_custom_gvim(int(sys.argv[2]))
-            return
-
     port_chan = Queue()
     t = threading.Thread(target=start_listener, args=(port_chan,))
     t.setDaemon(True)
@@ -120,10 +87,8 @@ def main():
 
     remote_host = sys.argv[1]
     # TODO: Make sure port is free on target aswell
-    try:
-        run_ssh(remote_host, port, port)
-    finally:
-        shutil.rmtree(get_system_dir())
+    run_ssh(remote_host, port, port)
+    shutil.rmtree(get_system_dir())
 
 if __name__ == "__main__":
     main()
